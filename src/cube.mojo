@@ -444,6 +444,15 @@ def render_frame(fire: List[Float32], corona: List[Float32], term_width: Int, te
 def main() raises:
     var shutil = Python.import_module("shutil")
 
+    # Embedding CPython installs its own SIGINT handler, which only ever
+    # gets checked while the interpreter's own eval loop is running. This
+    # program spends almost all of its time in native Mojo code between the
+    # brief per-frame `shutil.get_terminal_size()` call, so Ctrl+C would
+    # otherwise sit pending and never actually fire. Restore the OS default
+    # (immediate termination) instead.
+    var signal = Python.import_module("signal")
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
     var a: Float32 = 0.0
     var b: Float32 = 0.0
     var c: Float32 = 0.0
