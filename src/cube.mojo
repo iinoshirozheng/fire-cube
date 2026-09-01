@@ -13,7 +13,7 @@ comptime FRAME_DELAY: Float64 = 0.016
 # raw quadrant column count.
 comptime CUBE_SIZE_RATIO: Float32 = 0.23
 
-# Lane count for the vectorized fire diffusion pass.
+# Lane count for the vectorized fire/corona/buffer-fill passes.
 comptime SIMD_WIDTH = 8
 
 # 3-tap blur weights used to both cool and spread intensity as it rises off
@@ -47,30 +47,73 @@ struct Color(Copyable, Movable, ImplicitlyCopyable):
     var b: UInt8
 
 
-def rotate_x(i: Float32, j: Float32, k: Float32, a: Float32, b: Float32, c: Float32) -> Float32:
-    return (j * sin(a) * sin(b) * cos(c) - k * cos(a) * sin(b) * cos(c) +
-            j * cos(a) * sin(c) + k * sin(a) * sin(c) + i * cos(b) * cos(c))
+@fieldwise_init
+struct Vec3(Copyable, Movable, ImplicitlyCopyable):
+    var x: Float32
+    var y: Float32
+    var z: Float32
 
 
-def rotate_y(i: Float32, j: Float32, k: Float32, a: Float32, b: Float32, c: Float32) -> Float32:
-    return (j * cos(a) * cos(c) + k * sin(a) * cos(c) -
-            j * sin(a) * sin(b) * sin(c) + k * cos(a) * sin(b) * sin(c) -
-            i * cos(b) * sin(c))
+@fieldwise_init
+struct RotationMatrix(Copyable, Movable, ImplicitlyCopyable):
+    # Precomputed 3x3 rotation matrix for Euler angles (a, b, c), built once
+    # per frame instead of re-deriving sin/cos(a, b, c) from scratch for
+    # every point sampled that frame — see `from_angles`.
+    var m00: Float32
+    var m01: Float32
+    var m02: Float32
+    var m10: Float32
+    var m11: Float32
+    var m12: Float32
+    var m20: Float32
+    var m21: Float32
+    var m22: Float32
+
+    @staticmethod
+    def from_angles(a: Float32, b: Float32, c: Float32) -> Self:
+        var ca = cos(a)
+        var sa = sin(a)
+        var cb = cos(b)
+        var sb = sin(b)
+        var cc = cos(c)
+        var sc = sin(c)
+        return Self(
+            cb * cc, sa * sb * cc + ca * sc, sa * sc - ca * sb * cc,
+            -cb * sc, ca * cc - sa * sb * sc, sa * cc + ca * sb * sc,
+            sb, -sa * cb, ca * cb,
+        )
+
+    def apply(self, v: Vec3) -> Vec3:
+        return Vec3(
+            self.m00 * v.x + self.m01 * v.y + self.m02 * v.z,
+            self.m10 * v.x + self.m11 * v.y + self.m12 * v.z,
+            self.m20 * v.x + self.m21 * v.y + self.m22 * v.z,
+        )
 
 
-def rotate_z(i: Float32, j: Float32, k: Float32, a: Float32, b: Float32) -> Float32:
-    return k * cos(a) * cos(b) - j * sin(a) * cos(b) + i * sin(b)
-
-
-def surface_turbulence(cube_x: Float32, cube_y: Float32, cube_z: Float32, a: Float32, b: Float32, c: Float32) -> Float32:
+def surface_turbulence(point: Vec3, a: Float32, b: Float32, c: Float32) -> Float32:
     # Three independent octaves multiplied together: each is a smooth [0,1]
     # wave, but the product is patchy — bright cores, dark sunspot gaps —
     # and slowly churns over time via the (already-animating) rotation
     # angles, so the plasma texture never repeats or freezes.
-    var n1 = 0.5 + 0.5 * sin(cube_x * 0.45 + cube_z * 0.30 + a * 2.5)
-    var n2 = 0.5 + 0.5 * sin(cube_y * 0.50 - cube_x * 0.20 + b * 3.1)
-    var n3 = 0.5 + 0.5 * cos((cube_x + cube_y + cube_z) * 0.25 - c * 5.0)
+    var n1 = 0.5 + 0.5 * sin(point.x * 0.45 + point.z * 0.30 + a * 2.5)
+    var n2 = 0.5 + 0.5 * sin(point.y * 0.50 - point.x * 0.20 + b * 3.1)
+    var n3 = 0.5 + 0.5 * cos((point.x + point.y + point.z) * 0.25 - c * 5.0)
     return n1 * n2 * n3
+
+
+def face_light(rot: RotationMatrix, normal: Vec3) -> Float32:
+    # A face pointing toward the camera (-z, since the cube sits out at +z)
+    # is fully lit, one pointing away falls to the ambient floor. Every
+    # point on a given face shares this exact value — callers compute it
+    # once per face per frame, not once per sample point.
+    var rotated = rot.apply(normal)
+    var facing = -rotated.z
+    if facing < 0.0:
+        facing = 0.0
+    if facing > 1.0:
+        facing = 1.0
+    return LIGHT_FLOOR + (1.0 - LIGHT_FLOOR) * facing
 
 
 def plot_surface(
@@ -78,46 +121,30 @@ def plot_surface(
     mut z_buffer: List[Float32],
     width: Int,
     pixel_height: Int,
-    cube_x: Float32,
-    cube_y: Float32,
-    cube_z: Float32,
-    nx: Float32,
-    ny: Float32,
-    nz: Float32,
+    point: Vec3,
+    light: Float32,
     a: Float32,
     b: Float32,
     c: Float32,
+    rot: RotationMatrix,
 ):
-    var x = rotate_x(cube_x, cube_y, cube_z, a, b, c)
-    var y = rotate_y(cube_x, cube_y, cube_z, a, b, c)
-    var z = rotate_z(cube_x, cube_y, cube_z, a, b) + DISTANCE_FROM_CAM
+    var rotated = rot.apply(point)
+    var z = rotated.z + DISTANCE_FROM_CAM
 
     var ooz = 1.0 / z
     # Each quadrant subpixel is a tall rectangle, not square (2 horizontal
     # steps span one character cell's width, but 2 vertical steps span its
     # full height, which is ~2x its width) — double the x term to compensate,
     # same fix the original cube.c used for the terminal's cell aspect ratio.
-    var xp = Int(Float32(width) / 2 + K1 * ooz * x * 2.0)
-    var yp = Int(Float32(pixel_height) / 2 + K1 * ooz * y)
+    var xp = Int(Float32(width) / 2 + K1 * ooz * rotated.x * 2.0)
+    var yp = Int(Float32(pixel_height) / 2 + K1 * ooz * rotated.y)
 
     var idx = xp + yp * width
     if idx >= 0 and idx < width * pixel_height:
         if ooz > z_buffer[idx]:
             z_buffer[idx] = ooz
-
-            # Face normal rotated the same as the surface point; a face
-            # pointing toward the camera (-z, since the cube sits out at
-            # +z) is fully lit, one pointing away falls to the ambient floor.
-            var facing = -rotate_z(nx, ny, nz, a, b)
-            if facing < 0.0:
-                facing = 0.0
-            if facing > 1.0:
-                facing = 1.0
-            var light = LIGHT_FLOOR + (1.0 - LIGHT_FLOOR) * facing
-
-            var turb = surface_turbulence(cube_x, cube_y, cube_z, a, b, c)
+            var turb = surface_turbulence(point, a, b, c)
             var shade = TURB_FLOOR + (1.0 - TURB_FLOOR) * turb
-
             fire[idx] = light * shade
 
 
@@ -131,16 +158,27 @@ def draw_cube(
     b: Float32,
     c: Float32,
 ):
+    var rot = RotationMatrix.from_angles(a, b, c)
+
+    # Each face's light term is constant across all of its sample points —
+    # compute it once per face here, not once per point in the hot loop.
+    var light1 = face_light(rot, Vec3(0.0, 0.0, -1.0))
+    var light2 = face_light(rot, Vec3(1.0, 0.0, 0.0))
+    var light3 = face_light(rot, Vec3(-1.0, 0.0, 0.0))
+    var light4 = face_light(rot, Vec3(0.0, 0.0, 1.0))
+    var light5 = face_light(rot, Vec3(0.0, -1.0, 0.0))
+    var light6 = face_light(rot, Vec3(0.0, 1.0, 0.0))
+
     var cube_x = -cube_width
     while cube_x < cube_width:
         var cube_y = -cube_width
         while cube_y < cube_width:
-            plot_surface(fire, z_buffer, width, pixel_height, cube_x, cube_y, -cube_width, 0.0, 0.0, -1.0, a, b, c)
-            plot_surface(fire, z_buffer, width, pixel_height, cube_width, cube_y, cube_x, 1.0, 0.0, 0.0, a, b, c)
-            plot_surface(fire, z_buffer, width, pixel_height, -cube_width, cube_y, -cube_x, -1.0, 0.0, 0.0, a, b, c)
-            plot_surface(fire, z_buffer, width, pixel_height, -cube_x, cube_y, cube_width, 0.0, 0.0, 1.0, a, b, c)
-            plot_surface(fire, z_buffer, width, pixel_height, cube_x, -cube_width, -cube_y, 0.0, -1.0, 0.0, a, b, c)
-            plot_surface(fire, z_buffer, width, pixel_height, cube_x, cube_width, cube_y, 0.0, 1.0, 0.0, a, b, c)
+            plot_surface(fire, z_buffer, width, pixel_height, Vec3(cube_x, cube_y, -cube_width), light1, a, b, c, rot)
+            plot_surface(fire, z_buffer, width, pixel_height, Vec3(cube_width, cube_y, cube_x), light2, a, b, c, rot)
+            plot_surface(fire, z_buffer, width, pixel_height, Vec3(-cube_width, cube_y, -cube_x), light3, a, b, c, rot)
+            plot_surface(fire, z_buffer, width, pixel_height, Vec3(-cube_x, cube_y, cube_width), light4, a, b, c, rot)
+            plot_surface(fire, z_buffer, width, pixel_height, Vec3(cube_x, -cube_width, -cube_y), light5, a, b, c, rot)
+            plot_surface(fire, z_buffer, width, pixel_height, Vec3(cube_x, cube_width, cube_y), light6, a, b, c, rot)
             cube_y += INCREMENT_SPEED
         cube_x += INCREMENT_SPEED
 
@@ -178,7 +216,8 @@ def step_fire(mut fire: List[Float32], width: Int, pixel_height: Int):
 def box_blur_pass(src: List[Float32], mut dst: List[Float32], width: Int, pixel_height: Int):
     # Isotropic 3x3 box blur (center weighted double), SIMD-vectorized across
     # each row's interior; edges fall back to scalar boundary-replicated
-    # blending, same pattern as step_fire.
+    # blending, same pattern as step_fire. Every element of `dst` is written
+    # unconditionally, so callers never need to zero it first.
     var sptr = src.unsafe_ptr()
     var dptr = dst.unsafe_ptr()
     for y in range(pixel_height):
@@ -223,19 +262,35 @@ def box_blur_pass(src: List[Float32], mut dst: List[Float32], width: Int, pixel_
         dst[row + width - 1] = rv
 
 
-def compute_corona(fire: List[Float32], width: Int, pixel_height: Int) -> List[Float32]:
-    var a = List[Float32]()
-    var b = List[Float32]()
-    for _ in range(width * pixel_height):
-        a.append(0.0)
-        b.append(0.0)
-
+def compute_corona(
+    fire: List[Float32],
+    mut corona_a: List[Float32],
+    mut corona_b: List[Float32],
+    width: Int,
+    pixel_height: Int,
+):
     # Three passes widen the halo (each box blur pass ~doubles its reach,
     # same trick as approximating a Gaussian blur with repeated box blurs).
-    box_blur_pass(fire, a, width, pixel_height)
-    box_blur_pass(a, b, width, pixel_height)
-    box_blur_pass(b, a, width, pixel_height)
-    return a^
+    # `corona_a`/`corona_b` are caller-owned scratch buffers reused every
+    # frame — box_blur_pass fully overwrites its destination, so there's
+    # nothing to zero and nothing to reallocate. The final pass leaves the
+    # result in `corona_a`.
+    box_blur_pass(fire, corona_a, width, pixel_height)
+    box_blur_pass(corona_a, corona_b, width, pixel_height)
+    box_blur_pass(corona_b, corona_a, width, pixel_height)
+
+
+def fill_zero(mut buf: List[Float32]):
+    var n = len(buf)
+    var ptr = buf.unsafe_ptr()
+    var zero = SIMD[DType.float32, SIMD_WIDTH](0.0)
+    var i = 0
+    while i + SIMD_WIDTH <= n:
+        ptr.unsafe_store[width=SIMD_WIDTH](i, zero)
+        i += SIMD_WIDTH
+    while i < n:
+        buf[i] = 0.0
+        i += 1
 
 
 def lerp_color(lo: Color, hi: Color, f: Float32) -> Color:
@@ -394,6 +449,9 @@ def main() raises:
     var c: Float32 = 0.0
 
     var fire = List[Float32]()
+    var z_buffer = List[Float32]()
+    var corona_a = List[Float32]()
+    var corona_b = List[Float32]()
 
     var prev_width = 0
     var prev_height = 0
@@ -407,9 +465,11 @@ def main() raises:
         var pixel_height = height * 2
 
         if width != prev_width or height != prev_height:
-            fire = List[Float32]()
-            for _ in range(pixel_width * pixel_height):
-                fire.append(0.0)
+            var n = pixel_width * pixel_height
+            fire = List[Float32](length=n, fill=0.0)
+            z_buffer = List[Float32](length=n, fill=0.0)
+            corona_a = List[Float32](length=n, fill=0.0)
+            corona_b = List[Float32](length=n, fill=0.0)
             prev_width = width
             prev_height = height
             print("\x1b[2J", end="")
@@ -418,15 +478,13 @@ def main() raises:
 
         step_fire(fire, pixel_width, pixel_height)
 
-        var z_buffer = List[Float32]()
-        for _ in range(pixel_width * pixel_height):
-            z_buffer.append(0.0)
+        fill_zero(z_buffer)
         draw_cube(fire, z_buffer, pixel_width, pixel_height, cube_width, a, b, c)
 
-        var corona = compute_corona(fire, pixel_width, pixel_height)
+        compute_corona(fire, corona_a, corona_b, pixel_width, pixel_height)
 
         print("\x1b[H", end="")
-        print(render_frame(fire, corona, width, height, pixel_width), end="", flush=True)
+        print(render_frame(fire, corona_a, width, height, pixel_width), end="", flush=True)
 
         a += 0.05
         b += 0.05
