@@ -79,6 +79,22 @@ interpreter on `PATH` at runtime (used only to read the terminal size via
 `shutil.get_terminal_size()`), which macOS and virtually every Linux distro
 already ship.
 
+| Platform | Download |
+|---|---|
+| macOS (Apple Silicon) | `fire-cube-macos-arm64` |
+| Linux x86_64 | `fire-cube-linux-x86_64` |
+| Linux arm64 | `fire-cube-linux-arm64` |
+| Windows | not built — see below |
+
+**Windows**: Mojo doesn't ship a compiler for Windows at all (verified —
+`pixi` can't even solve an environment for the `win-64` platform, there's
+no package to install), so there's no native `.exe` to build, on this repo
+or any other Mojo project, until Modular ships one. Run it under
+[WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) instead: grab
+`fire-cube-linux-x86_64` (or `-arm64` if your WSL2 is running on Arm) and
+run it from a WSL2 terminal — it's a real Linux environment, so the Linux
+binary just works.
+
 To build one yourself for your current platform:
 
 ```bash

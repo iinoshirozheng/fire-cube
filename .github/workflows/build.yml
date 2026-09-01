@@ -9,6 +9,10 @@ on:
   workflow_dispatch:
 
 jobs:
+  # No Windows leg: Mojo doesn't publish a win-64 conda package (verified
+  # via `pixi workspace platform add win-64` -> "No candidates were found
+  # for mojo"), so there's no compiler to build with. Windows users run the
+  # linux-x86_64/-arm64 asset under WSL2 instead -- see README.
   build:
     strategy:
       fail-fast: false
