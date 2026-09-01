@@ -1,0 +1,12 @@
+[workspace]
+authors = ["Ray <iinoshirozheng@gmail.com>"]
+channels = ["https://conda.modular.com/max", "conda-forge"]
+name = "fire-cube"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+cube = "mojo run src/cube.mojo"
+
+[dependencies]
+mojo = ">=1.0.0,<2"
