@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Mojo](https://img.shields.io/badge/mojo-%3E%3D1.0.0-fa4d24.svg)](https://mojolang.org)
 [![Managed by pixi](https://img.shields.io/badge/managed%20by-pixi-ffd24d.svg)](https://pixi.prefix.dev)
-[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#requirements)
 
 A rotating wireframe cube — the classic ASCII-art demoscene trick — reimagined
 as a burning plasma sun, rendered live in your terminal. Written in
@@ -19,6 +19,7 @@ ASCII grid.
 - [What it does](#what-it-does)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [Prebuilt binaries](#prebuilt-binaries)
 - [How it works](#how-it-works)
 - [Contributing](#contributing)
 - [Credits](#credits)
@@ -53,9 +54,9 @@ ASCII grid.
 ## Requirements
 
 - [pixi](https://pixi.prefix.dev) — manages the Mojo toolchain
-- macOS on Apple Silicon (`pixi.toml` currently pins `osx-arm64`; add
-  another platform with `pixi workspace platform add <platform>` if you're
-  on Linux/x86 and want to try it there — untested elsewhere)
+- macOS (Apple Silicon) or Linux (x86_64 / aarch64) — `pixi.toml` pins
+  `osx-arm64`, `linux-64`, and `linux-aarch64`. Windows isn't supported by
+  Mojo directly; use WSL2, which resolves as one of the Linux platforms.
 
 ## Quick start
 
@@ -67,6 +68,22 @@ pixi run cube
 
 Press `Ctrl+C` to stop — it runs forever, like the demos it's descended
 from.
+
+## Prebuilt binaries
+
+Tagged releases build a standalone executable for each platform via CI
+([`.github/workflows/build.yml`](.github/workflows/build.yml)) — grab one
+from the [Releases](https://github.com/iinoshirozheng/fire-cube/releases)
+page instead of installing pixi/Mojo. The binary still needs a Python 3
+interpreter on `PATH` at runtime (used only to read the terminal size via
+`shutil.get_terminal_size()`), which macOS and virtually every Linux distro
+already ship.
+
+To build one yourself for your current platform:
+
+```bash
+pixi run build   # -> dist/fire-cube
+```
 
 ## How it works
 

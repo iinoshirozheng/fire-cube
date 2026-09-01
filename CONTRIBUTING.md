@@ -9,8 +9,8 @@ bar for contributing is low — but a few things will save you a round trip.
 git clone https://github.com/iinoshirozheng/fire-cube.git
 cd fire-cube
 pixi install
-pixi run mojo build src/cube.mojo -o /tmp/fire-cube   # sanity-check it compiles
-pixi run cube                                          # run it
+pixi run build   # sanity-check it compiles -> dist/fire-cube
+pixi run cube    # run it
 ```
 
 If `pixi run` fails with `unable to locate module 'std'` right after cloning
@@ -29,8 +29,7 @@ to confirm a pattern compiles the way you expect.
 
 ## Before opening a PR
 
-- Make sure `pixi run mojo build src/cube.mojo -o /tmp/fire-cube` succeeds
-  with no warnings you introduced.
+- Make sure `pixi run build` succeeds with no warnings you introduced.
 - Actually run it (`pixi run cube`) and eyeball the output — this is a
   visual project; a change that compiles but looks wrong isn't done.
 - Keep the diff focused. If you're tuning constants (fire cooling, corona
@@ -42,9 +41,10 @@ to confirm a pattern compiles the way you expect.
 
 ## Ideas that would be welcome
 
-- Cross-platform testing (`pixi.toml` only pins `osx-arm64` today; reports
-  or a tested `pixi workspace platform add` for Linux/other platforms are
-  useful).
+- Testing on Linux (`pixi.toml` pins `osx-arm64`, `linux-64`, and
+  `linux-aarch64`, but CI only started exercising the Linux builds
+  recently — bug reports from there are especially useful) or a tested
+  `pixi workspace platform add` for a platform not listed yet.
 - Alternative color palettes / lighting presets.
 - Performance notes at very large terminal sizes.
 
