@@ -358,47 +358,29 @@ def render_frame(fire: List[Float32], corona: List[Float32], term_width: Int, te
             var bl_i = bot_row + col * 2
             var br_i = bl_i + 1
 
-            var tl = max(fire[tl_i], corona[tl_i] * CORONA_STRENGTH)
-            var tr = max(fire[tr_i], corona[tr_i] * CORONA_STRENGTH)
-            var bl = max(fire[bl_i], corona[bl_i] * CORONA_STRENGTH)
-            var br = max(fire[br_i], corona[br_i] * CORONA_STRENGTH)
+            var v = SIMD[DType.float32, 4](
+                max(fire[tl_i], corona[tl_i] * CORONA_STRENGTH),
+                max(fire[tr_i], corona[tr_i] * CORONA_STRENGTH),
+                max(fire[bl_i], corona[bl_i] * CORONA_STRENGTH),
+                max(fire[br_i], corona[br_i] * CORONA_STRENGTH),
+            )
 
-            var mean = (tl + tr + bl + br) / 4.0
+            # Split the 4 subpixels into a "bright" and "dim" group by their
+            # own mean, done as vector ops instead of 4 scalar branches:
+            # `mask` picks out which lanes are above the mean, `bits`
+            # packs that into the glyph's quadrant pattern (lane order
+            # matches quadrant_glyph's bit0=TL,bit1=TR,bit2=BL,bit3=BR),
+            # and `select`/`reduce_add` compute each group's sum without
+            # any data-dependent branching.
+            var mean = v.reduce_add() / 4.0
+            var mask = v.gt(SIMD[DType.float32, 4](mean))
+            var bits = mask.cast[DType.uint8]()
+            var pattern = Int((bits * SIMD[DType.uint8, 4](1, 2, 4, 8)).reduce_add())
 
-            var pattern = 0
-            var hi_sum: Float32 = 0.0
-            var hi_count = 0
-            var lo_sum: Float32 = 0.0
-            var lo_count = 0
-
-            if tl > mean:
-                pattern += 1
-                hi_sum += tl
-                hi_count += 1
-            else:
-                lo_sum += tl
-                lo_count += 1
-            if tr > mean:
-                pattern += 2
-                hi_sum += tr
-                hi_count += 1
-            else:
-                lo_sum += tr
-                lo_count += 1
-            if bl > mean:
-                pattern += 4
-                hi_sum += bl
-                hi_count += 1
-            else:
-                lo_sum += bl
-                lo_count += 1
-            if br > mean:
-                pattern += 8
-                hi_sum += br
-                hi_count += 1
-            else:
-                lo_sum += br
-                lo_count += 1
+            var hi_sum = mask.select(v, SIMD[DType.float32, 4](0.0)).reduce_add()
+            var lo_sum = v.reduce_add() - hi_sum
+            var hi_count = Int(bits.reduce_add())
+            var lo_count = 4 - hi_count
 
             var fg_t = mean
             if hi_count > 0:
