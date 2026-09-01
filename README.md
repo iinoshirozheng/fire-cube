@@ -1,5 +1,10 @@
 # 🔥 fire-cube
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Mojo](https://img.shields.io/badge/mojo-%3E%3D1.0.0-fa4d24.svg)](https://mojolang.org)
+[![Managed by pixi](https://img.shields.io/badge/managed%20by-pixi-ffd24d.svg)](https://pixi.prefix.dev)
+[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](#requirements)
+
 A rotating wireframe cube — the classic ASCII-art demoscene trick — reimagined
 as a burning plasma sun, rendered live in your terminal. Written in
 [Mojo](https://mojolang.org), with a SIMD-accelerated fire simulation,
@@ -8,6 +13,16 @@ and 2×2 quadrant-block subpixel rendering for far more detail than a plain
 ASCII grid.
 
 ![demo](demo.gif)
+
+## Table of Contents
+
+- [What it does](#what-it-does)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [Contributing](#contributing)
+- [Credits](#credits)
+- [License](#license)
 
 ## What it does
 
@@ -87,6 +102,12 @@ quadrant subpixel is *not* square as a result — the horizontal projection
 term carries an extra `× 2` factor to compensate (the same fix the
 original `cube.c` used, reintroduced here once quadrant rendering made the
 subpixel grid anisotropic again).
+
+## Contributing
+
+Bug reports, tuning suggestions, and PRs are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to set up the dev environment and
+what to know before touching the Mojo code.
 
 ## Credits
 
