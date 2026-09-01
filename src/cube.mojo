@@ -1,6 +1,7 @@
 from std.math import sin, cos, min, max
 from std.time import sleep
 from std.python import Python, PythonObject
+from std.algorithm.functional import vectorize
 
 comptime DISTANCE_FROM_CAM: Float32 = 100.0
 comptime K1: Float32 = 40.0
@@ -185,8 +186,11 @@ def draw_cube(
 
 def step_fire(mut fire: List[Float32], width: Int, pixel_height: Int):
     # Rise + cool + blur one row per frame, vectorized across each row's
-    # interior; the two edge pixels fall back to scalar boundary-replicated
-    # blending.
+    # interior via the stdlib's `vectorize` (std.algorithm.functional) —
+    # it calls the closure with a shrunk `w` for whatever remainder doesn't
+    # divide evenly by SIMD_WIDTH, so there's no separate scalar tail loop
+    # to hand-maintain. The two edge pixels still use scalar boundary-
+    # replicated blending, since they sit outside the interior range.
     var ptr = fire.unsafe_ptr()
     for y in range(1, pixel_height):
         var src_row = y * width
@@ -195,19 +199,15 @@ def step_fire(mut fire: List[Float32], width: Int, pixel_height: Int):
         var lv = fire[src_row] * (FIRE_CENTER_W + FIRE_SIDE_W) + fire[src_row + 1] * FIRE_SIDE_W - FIRE_COOL
         fire[dst_row] = max(lv, Float32(0.0))
 
-        var x = 1
-        while x + SIMD_WIDTH <= width - 1:
-            var center = ptr.unsafe_load[width=SIMD_WIDTH](src_row + x)
-            var left = ptr.unsafe_load[width=SIMD_WIDTH](src_row + x - 1)
-            var right = ptr.unsafe_load[width=SIMD_WIDTH](src_row + x + 1)
+        def blur_row[w: Int](idx: Int) {imm ptr, imm src_row, imm dst_row}:
+            var base = src_row + 1 + idx
+            var center = ptr.unsafe_load[width=w](base)
+            var left = ptr.unsafe_load[width=w](base - 1)
+            var right = ptr.unsafe_load[width=w](base + 1)
             var blended = center * FIRE_CENTER_W + left * FIRE_SIDE_W + right * FIRE_SIDE_W - FIRE_COOL
-            ptr.unsafe_store[width=SIMD_WIDTH](dst_row + x, blended.clamp(0.0, 1.0))
-            x += SIMD_WIDTH
+            ptr.unsafe_store[width=w](dst_row + 1 + idx, blended.clamp(0.0, 1.0))
 
-        while x < width - 1:
-            var v = fire[src_row + x] * FIRE_CENTER_W + fire[src_row + x - 1] * FIRE_SIDE_W + fire[src_row + x + 1] * FIRE_SIDE_W - FIRE_COOL
-            fire[dst_row + x] = max(v, Float32(0.0))
-            x += 1
+        vectorize[SIMD_WIDTH](width - 2, blur_row)
 
         var rv = fire[src_row + width - 1] * (FIRE_CENTER_W + FIRE_SIDE_W) + fire[src_row + width - 2] * FIRE_SIDE_W - FIRE_COOL
         fire[dst_row + width - 1] = max(rv, Float32(0.0))
@@ -215,9 +215,10 @@ def step_fire(mut fire: List[Float32], width: Int, pixel_height: Int):
 
 def box_blur_pass(src: List[Float32], mut dst: List[Float32], width: Int, pixel_height: Int):
     # Isotropic 3x3 box blur (center weighted double), SIMD-vectorized across
-    # each row's interior; edges fall back to scalar boundary-replicated
-    # blending, same pattern as step_fire. Every element of `dst` is written
-    # unconditionally, so callers never need to zero it first.
+    # each row's interior via `vectorize` (auto-handles the tail — see
+    # step_fire); edges fall back to scalar boundary-replicated blending.
+    # Every element of `dst` is written unconditionally, so callers never
+    # need to zero it first.
     var sptr = src.unsafe_ptr()
     var dptr = dst.unsafe_ptr()
     for y in range(pixel_height):
@@ -236,23 +237,14 @@ def box_blur_pass(src: List[Float32], mut dst: List[Float32], width: Int, pixel_
         ) / 10.0
         dst[row] = lv
 
-        var x = 1
-        while x + SIMD_WIDTH <= width - 1:
-            var above = sptr.unsafe_load[width=SIMD_WIDTH](row_above + x - 1) + sptr.unsafe_load[width=SIMD_WIDTH](row_above + x) + sptr.unsafe_load[width=SIMD_WIDTH](row_above + x + 1)
-            var mid = sptr.unsafe_load[width=SIMD_WIDTH](row + x - 1) + sptr.unsafe_load[width=SIMD_WIDTH](row + x) * 2.0 + sptr.unsafe_load[width=SIMD_WIDTH](row + x + 1)
-            var below = sptr.unsafe_load[width=SIMD_WIDTH](row_below + x - 1) + sptr.unsafe_load[width=SIMD_WIDTH](row_below + x) + sptr.unsafe_load[width=SIMD_WIDTH](row_below + x + 1)
+        def blur_row[w: Int](idx: Int) {imm sptr, imm dptr, imm row_above, imm row, imm row_below}:
+            var above = sptr.unsafe_load[width=w](row_above + 1 + idx - 1) + sptr.unsafe_load[width=w](row_above + 1 + idx) + sptr.unsafe_load[width=w](row_above + 1 + idx + 1)
+            var mid = sptr.unsafe_load[width=w](row + 1 + idx - 1) + sptr.unsafe_load[width=w](row + 1 + idx) * 2.0 + sptr.unsafe_load[width=w](row + 1 + idx + 1)
+            var below = sptr.unsafe_load[width=w](row_below + 1 + idx - 1) + sptr.unsafe_load[width=w](row_below + 1 + idx) + sptr.unsafe_load[width=w](row_below + 1 + idx + 1)
             var total = (above + mid + below) / 10.0
-            dptr.unsafe_store[width=SIMD_WIDTH](row + x, total.clamp(0.0, 1.0))
-            x += SIMD_WIDTH
+            dptr.unsafe_store[width=w](row + 1 + idx, total.clamp(0.0, 1.0))
 
-        while x < width - 1:
-            var v = (
-                src[row_above + x - 1] + src[row_above + x] + src[row_above + x + 1] +
-                src[row + x - 1] + src[row + x] * 2.0 + src[row + x + 1] +
-                src[row_below + x - 1] + src[row_below + x] + src[row_below + x + 1]
-            ) / 10.0
-            dst[row + x] = v
-            x += 1
+        vectorize[SIMD_WIDTH](width - 2, blur_row)
 
         var rv = (
             src[row_above + width - 2] + src[row_above + width - 1] * 2.0 +
@@ -278,19 +270,6 @@ def compute_corona(
     box_blur_pass(fire, corona_a, width, pixel_height)
     box_blur_pass(corona_a, corona_b, width, pixel_height)
     box_blur_pass(corona_b, corona_a, width, pixel_height)
-
-
-def fill_zero(mut buf: List[Float32]):
-    var n = len(buf)
-    var ptr = buf.unsafe_ptr()
-    var zero = SIMD[DType.float32, SIMD_WIDTH](0.0)
-    var i = 0
-    while i + SIMD_WIDTH <= n:
-        ptr.unsafe_store[width=SIMD_WIDTH](i, zero)
-        i += SIMD_WIDTH
-    while i < n:
-        buf[i] = 0.0
-        i += 1
 
 
 def lerp_color(lo: Color, hi: Color, f: Float32) -> Color:
@@ -487,7 +466,7 @@ def main() raises:
 
         step_fire(fire, pixel_width, pixel_height)
 
-        fill_zero(z_buffer)
+        Span(z_buffer).fill(0.0)
         draw_cube(fire, z_buffer, pixel_width, pixel_height, cube_width, a, b, c)
 
         compute_corona(fire, corona_a, corona_b, pixel_width, pixel_height)
